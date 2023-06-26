@@ -565,6 +565,7 @@
     <Compile Include="Attribute\CheckListFieldAttribute.cs" />
     <Compile Include="Attribute\CustomSettingsBlockTypeAttribute.cs" />
     <Compile Include="Attribute\GroupMemberRequirementFieldAttribute.cs" />
+    <Compile Include="Attribute\ToggleOffBlockAttribute.cs" />
     <Compile Include="Attribute\IconSvgAttribute.cs" />
     <Compile Include="Attribute\PublicAttributeHelper.cs" />
     <Compile Include="Attribute\ColorFieldAttribute.cs" />

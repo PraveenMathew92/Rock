@@ -14,6 +14,10 @@
 // limitations under the License.
 // </copyright>
 //
+using Rock.Attribute;
+using Rock.Data;
+using Rock.Web.Cache;
+using Rock.Web.UI;
 using System;
 using System.Collections.Generic;
 using System.Data.Entity;
@@ -22,10 +26,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
-
-using Rock.Data;
-using Rock.Web.Cache;
-using Rock.Web.UI;
+using WebGrease.Css.Extensions;
 
 namespace Rock.Model
 {
@@ -139,6 +140,12 @@ namespace Rock.Model
         private static void RegisterEntityBlockTypes( bool refreshAll = false )
         {
             var rockBlockTypes = Reflection.FindTypes( typeof( Blocks.IRockBlockType ) );
+
+            // exclude blocks that are toggled off from being registered
+            rockBlockTypes.Where( r => r.Value.GetCustomAttribute<ToggleOffBlockAttribute>() != null )
+                .Select( r => r.Key )
+                .ToList()
+                .ForEach( b => rockBlockTypes.Remove( b ) );
 
             List<Type> registeredTypes;
             using ( var rockContext = new RockContext() )
