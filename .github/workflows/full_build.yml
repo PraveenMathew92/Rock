@@ -26,13 +26,7 @@ jobs:
         run: nuget restore
 
       - name: Publish to folder
-        run: msbuild /nologo /verbosity:diag /t:Build /t:pipelinePreDeployCopyAllFilesToOneFolder /p:_PackageTempDir="\published\"
-
-      - name: Upload artifact for deployment job
-        uses: actions/upload-artifact@v3
-        with:
-          name: ASP-app
-          path: '/published/**'
+        run: msbuild /nologo /verbosity:m /t:Build
 
   deploy:
     runs-on: windows-latest
