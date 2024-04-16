@@ -27,24 +27,6 @@
     </RockFormField>
 </template>
 
-<script lang="ts">
-    type Rock = {
-        controls: {
-            datePicker: {
-                initialize: (args: Record<string, unknown>) => void;
-            };
-        };
-    };
-
-    declare global {
-        /* eslint-disable @typescript-eslint/naming-convention */
-        interface Window {
-            Rock: Rock;
-        }
-        /* eslint-enable @typescript-eslint/naming-convention */
-    }
-</script>
-
 <script setup lang="ts">
     import { computed, onMounted, PropType, ref, watch } from "vue";
     import { toNumber } from "@Obsidian/Utility/numberUtils";
@@ -93,14 +75,22 @@
                 return null;
             }
 
-            let date = RockDateTime.fromParts(toNumber(dateMatch[3]), toNumber(dateMatch[1]), toNumber(dateMatch[2]));
+            let date: RockDateTime | null;
+            if (internalTimeValue.value.hour !== undefined && internalTimeValue.value.minute !== undefined) {
+                date = RockDateTime.fromParts(toNumber(dateMatch[3]),
+                    toNumber(dateMatch[1]),
+                    toNumber(dateMatch[2]),
+                    internalTimeValue.value.hour,
+                    internalTimeValue.value.minute);
+            }
+            else {
+                date = RockDateTime.fromParts(toNumber(dateMatch[3]),
+                    toNumber(dateMatch[1]),
+                    toNumber(dateMatch[2]));
+            }
 
             if (date === null) {
                 return null;
-            }
-
-            if (internalTimeValue.value.hour !== undefined && internalTimeValue.value.minute !== undefined) {
-                date = date?.addHours(internalTimeValue.value.hour).addMinutes(internalTimeValue.value.minute);
             }
 
             const year = date.year.toString();

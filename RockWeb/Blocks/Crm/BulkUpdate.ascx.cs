@@ -43,6 +43,7 @@ using Rock.Utility;
 using Rock.RealTime.Topics;
 using Rock.RealTime;
 using Rock.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace RockWeb.Blocks.Crm
 {
@@ -315,6 +316,11 @@ namespace RockWeb.Blocks.Crm
                 $('#{2}').closest('.form-group').toggleClass('bulk-item-selected', enabled)
             }}
 
+            // Enhanced lists need special handling
+            var enhancedList = $(this).parent().find('.chosen-select');
+            if (enhancedList.length) {{
+                $(enhancedList).trigger('chosen:updated');
+            }}
         }});
 
         // Update the hidden field with the client id of each selected control, (if client id ends with '_hf' as in the case of multi-select attributes, strip the ending '_hf').
@@ -722,7 +728,7 @@ namespace RockWeb.Blocks.Crm
                 clientId = request.ServerVariables["REMOTE_ADDR"];
             }
 
-            var processor = new PersonBulkUpdateProcessor();
+            var processor = new PersonBulkUpdateProcessor( Logger );
 
             processor.InstanceId = clientId;
 
@@ -1133,7 +1139,29 @@ namespace RockWeb.Blocks.Crm
 
         private void SetGroupControls()
         {
+            nbGroupMessage.Visible = false;
+            var rockContext = new RockContext();
+            Group group = null;
+
+            int? groupId = gpGroup.SelectedValueAsId();
+            if ( groupId.HasValue )
+            {
+                group = new GroupService( rockContext ).Get( groupId.Value );
+            }
+
             string action = ddlGroupAction.SelectedValue;
+
+            // If the person is not authorized to update/edit the group members...
+            if ( group != null && !( group.IsAuthorized( Authorization.EDIT, CurrentPerson ) || group.IsAuthorized( Authorization.MANAGE_MEMBERS, CurrentPerson ) ) )
+            {
+                nbGroupMessage.Visible = true;
+                nbGroupMessage.Text = $"You are not authorized to {action.ToLowerInvariant()} members for {group.Name}";
+                gpGroup.SetValue( null );
+                ddlGroupMemberStatus.Visible = false;
+                ddlGroupRole.Visible = false;
+                return;
+            }
+
             if ( action == "Remove" )
             {
                 ddlGroupMemberStatus.Visible = false;
@@ -1141,10 +1169,6 @@ namespace RockWeb.Blocks.Crm
             }
             else
             {
-                var rockContext = new RockContext();
-                Group group = null;
-
-                int? groupId = gpGroup.SelectedValueAsId();
                 if ( groupId.HasValue )
                 {
                     group = new GroupService( rockContext ).Get( groupId.Value );
@@ -1397,8 +1421,10 @@ namespace RockWeb.Blocks.Crm
 
             #region Constructors
 
-            public PersonBulkUpdateProcessor()
+            public PersonBulkUpdateProcessor( ILogger logger )
             {
+                _logger = logger;
+
                 this.SelectedFields = new List<string>();
                 this.PersonIdList = new List<int>();
                 this.PersonAttributeCategories = new List<Guid>();
@@ -1417,6 +1443,8 @@ namespace RockWeb.Blocks.Crm
             #region Fields and Properties
 
             private readonly static TraceSource _tracer = new TraceSource( "Rock.Crm.BulkUpdate" );
+
+            private readonly ILogger _logger;
 
             private int _currentPersonAliasId;
             private Person _currentPerson = null;
@@ -2243,7 +2271,7 @@ namespace RockWeb.Blocks.Crm
                 if ( this.UpdateGroupAction != GroupChangeActionSpecifier.None )
                 {
                     var group = new GroupService( rockContext ).Get( UpdateGroupId.Value );
-                    if ( group != null )
+                    if ( group != null && ( group.IsAuthorized( Authorization.EDIT, CurrentPerson ) || group.IsAuthorized( Authorization.MANAGE_MEMBERS, CurrentPerson ) ) )
                     {
                         var groupMemberService = new GroupMemberService( rockContext );
 
@@ -2370,7 +2398,7 @@ namespace RockWeb.Blocks.Crm
                                                 // Add those results to the log and then move on to the next person.
                                                 var validationMessage = string.Join( ",", groupMember.ValidationResults.Select( r => r.ErrorMessage ).ToArray() );
                                                 Interlocked.Increment( ref _errorCount );
-                                                RockLogger.Log.Information( RockLogDomains.Group, validationMessage );
+                                                _logger.LogInformation( validationMessage );
                                             }
                                         }
 

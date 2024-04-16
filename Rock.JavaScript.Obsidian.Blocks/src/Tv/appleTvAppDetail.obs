@@ -10,8 +10,8 @@
                  :labels="blockLabels"
                  :entityKey="entityKey"
                  :entityTypeGuid="entityTypeGuid"
-                 :entityTypeName="panelName"
-                 :isAuditHidden="false"
+                 entityTypeName="AppleTVApp"
+                 :isAuditHidden="isAuditHidden"
                  :isBadgesVisible="true"
                  :isDeleteVisible="false"
                  :isEditVisible="isEditable"
@@ -81,11 +81,15 @@
 
     // #region Computed Values
 
+    const isAuditHidden = computed((): boolean => {
+        return panelMode.value != DetailPanelMode.View;
+    });
+
     /**
      * The entity name to display in the block panel.
      */
     const panelName = computed((): string => {
-        return appleTvAppViewBag.value?.name ?? "New Application";
+        return appleTvAppViewBag.value?.name ?? "";
     });
 
     /**

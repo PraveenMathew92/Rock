@@ -15,12 +15,13 @@
 // </copyright>
 //
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+
 using Rock.Field.Types;
 using Rock.Lava;
 using Rock.Lava.Fluid;
-using Rock.Tests.Integration.Core.Lava;
-using Rock.Tests.Integration.TestData;
+using Rock.Tests.Integration.Modules.Crm;
 using Rock.Tests.Shared;
+using Rock.Tests.Shared.Lava;
 using Rock.Web.UI.Controls;
 
 namespace Rock.Tests.Integration.BugFixes
@@ -33,6 +34,7 @@ namespace Rock.Tests.Integration.BugFixes
     /// They are only relevant to the Rock version in which the bug is fixed, and should be removed in subsequent versions.
     /// </remarks>
     [TestClass]
+    [TestCategory( TestFeatures.Lava )]
     [RockObsolete( "1.16" )]
     public class BugFixVerificationTests_v16
     {
@@ -123,6 +125,7 @@ Property Filter: 1
         /// Verifies the resolution of a specific Issue.
         /// </summary>
         [TestMethod]
+        [TestCategory( TestFeatures.Lava )]
         public void Issue5560_LavaCommentsDisplayedInOutput()
         {
             /* The Lava Engine may render inline comments to output where an unmatched quote delimiter is present in the preceding template text.
@@ -208,6 +211,7 @@ Did you see those comments ^^^
         /// Verifies the resolution of a specific Issue.
         /// </summary>
         [TestMethod]
+        [TestCategory( TestFeatures.Lava )]
         public void Issue5632_ScheduleStartTimeReturnsUtc()
         {
             /* The Fluid Lava Engine incorrectly renders the Schedule.StartTimeOfDay property as a UTC DateTime rather than a TimeSpan.
@@ -237,7 +241,7 @@ StartTimeOfDay (Formatted): {{ schedule.StartTimeOfDay | Date:'hh:mm tt K' }}<br
 <pre>{{ schedule.iCalendarContent }}</pre>
 {% endschedule %}
 ";
-            var expectedOutput = @"
+            var expectedOutput = $@"
 <h3>Testing issue 5632</h3>
 Standard Date Format: 03:30 PM
 <br/>
@@ -245,7 +249,7 @@ Schedule Name: Sunday 10:30am
 <br/>
 StartTimeOfDay (Raw): 10:30:00
 <br/>
-StartTimeOfDay (Formatted): 10:30 AM +11:00
+StartTimeOfDay (Formatted): 10:30 AM {System.DateTime.Now:%K}
 <br/>
 <pre>
     BEGIN:VCALENDAR
@@ -264,6 +268,39 @@ StartTimeOfDay (Formatted): 10:30 AM +11:00
             };
 
             _TestHelper.AssertTemplateOutput( expectedOutput, template, options );
+        }
+
+        [TestMethod]
+        [TestCategory( TestFeatures.Lava )]
+        public void Issue5687_CannotNestEntityCommands()
+        {
+            /* The Fluid Lava Engine throws a parsing exception when trying to process embedded entity commands
+             * with the same root prefix.
+             * For details, see https://github.com/SparkDevNetwork/Rock/issues/5687.
+             * 
+             * Resolution: This issue occurred because the custom Lava tag parser for Fluid introduced in v16
+             * did not detect or require a whitespace delimiter for the tag identifier.
+             * The new parser was introduced to replace the existing less performant RegEx parser.
+             */
+
+            var input = @"
+{% assign registrationInstanceId = 1 %}
+{% registration where:'RegistrationInstanceId == {{ registrationInstanceId }}' %}
+    {% assign currentRegistrantCount = 0 %}
+    {% for registration in registrationItems %}
+        {% assign registrationId = registration.Id %}
+        {% registrationregistrant where:'RegistrationId == ""{{ registrationId }}""' %}
+            {% for registrationregistrant in registrationregistrantItems %}
+                {% assign currentRegistrantCount = currentRegistrantCount | Plus:1 %}
+            {% endfor %}
+        {% endregistrationregistrant %}
+    {% endfor %}
+{% endregistration %}
+";
+
+            // Confirm that the template is parsed correctly, but ignore the output.
+            var options = new LavaTestRenderOptions() { EnabledCommands = "RockEntity" };
+            _TestHelper.AssertTemplateOutput( string.Empty, input, options );
         }
     }
 }

@@ -358,6 +358,18 @@ namespace Rock.Model
                 return false;
             }
 
+            if ( new Service<RegistrationTemplate>( Context ).Queryable().Any( a => a.ConnectionStatusValueId == item.Id ) )
+            {
+                errorMessage = string.Format( "This {0} is assigned to a {1}.", DefinedValue.FriendlyTypeName, RegistrationTemplate.FriendlyTypeName );
+                return false;
+            }
+
+            if ( new Service<Theme>( Context ).Queryable().Any( a => a.PurposeValueId == item.Id ) )
+            {
+                errorMessage = string.Format( "This {0} is assigned to a {1}.", DefinedValue.FriendlyTypeName, Theme.FriendlyTypeName );
+                return false;
+            }
+
             if ( new Service<WorkflowActionForm>( Context ).Queryable().Any( a => a.PersonEntryCampusStatusValueId == item.Id ) )
             {
                 errorMessage = string.Format( "This {0} is assigned to a {1}.", DefinedValue.FriendlyTypeName, WorkflowActionForm.FriendlyTypeName );

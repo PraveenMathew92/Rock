@@ -36,7 +36,7 @@ namespace Rock.Obsidian.UI
     /// Extension methods for <see cref="GridBuilder{T}"/>. This provides much of
     /// specific use functionality of the builder.
     /// </summary>
-    internal static class GridBuilderExtensions
+    public static class GridBuilderExtensions
     {
         /// <summary>
         /// Adds a new person field to the grid definition.
@@ -61,7 +61,8 @@ namespace Rock.Obsidian.UI
                 {
                     NickName = person.NickName,
                     LastName = person.LastName,
-                    PhotoUrl = person.PhotoUrl
+                    PhotoUrl = person.PhotoUrl,
+                    IdKey    = person.IdKey
                 };
             } );
         }
@@ -306,6 +307,8 @@ namespace Rock.Obsidian.UI
             {
                 return;
             }
+
+            System.Diagnostics.Activity.Current?.AddTag( "rock.grid.custom_column", true );
 
             for ( int i = 0; i < additionalColumns.ColumnsConfig.Count; i++ )
             {

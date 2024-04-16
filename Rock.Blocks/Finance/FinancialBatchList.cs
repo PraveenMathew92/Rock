@@ -41,7 +41,7 @@ namespace Rock.Blocks.Finance
     [Category( "Finance" )]
     [Description( "Displays a list of financial batches." )]
     [IconCssClass( "fa fa-list" )]
-    //[SupportedSiteTypes( Model.SiteType.Web )]
+    [SupportedSiteTypes( Model.SiteType.Web )]
 
     [LinkedPage( "Detail Page",
         Description = "The page that will show the financial batch details.",
@@ -200,6 +200,14 @@ namespace Rock.Blocks.Finance
                 .OrderBy( dv => dv.Order )
                 .ToListItemBagList();
 
+            var currencyInfo = new RockCurrencyCodeInfo();
+            options.CurrencyInfo = new ViewModels.Utility.CurrencyInfoBag
+            {
+                Symbol = currencyInfo.Symbol,
+                DecimalPlaces = currencyInfo.DecimalPlaces,
+                SymbolLocation = currencyInfo.SymbolLocation
+            };
+
             return options;
         }
 
@@ -351,8 +359,11 @@ namespace Rock.Blocks.Finance
                                 Amount = a.Amount
                             };
                         } )
-                        .ToList()
-                        ?? new List<AccountData>();
+                        .ToList();
+                }
+                else
+                {
+                    item.Accounts = new List<AccountData>();
                 }
             }
 

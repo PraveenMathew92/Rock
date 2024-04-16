@@ -238,6 +238,8 @@ export const DefinedValue = {
     InteractionchanneltypeCommunication: "55004F5C-A8ED-7CB7-47EE-5988E9F8E0A8",
     /** Interaction Channel Type: Content Channel */
     InteractionchanneltypeContentchannel: "F1A19D09-E010-EEB3-465A-940A6F023CEB",
+    /** Interaction Channel Type: Interaction Intents */
+    InteractionchanneltypeInteractionIntents: "A64DA89B-F634-4D58-ADC7-32243F84224B",
     /** Interaction Channel Type: System Events */
     InteractionchanneltypeSystemEvents: "5919214F-9C59-4913-BE4E-0DFB6A05F528",
     /** Interaction Channel Type: UrlShortener */
@@ -504,6 +506,12 @@ export const DefinedValue = {
     StructureContentEditorDefault: "09B25845-B879-4E69-87E9-003F9380B8DD",
     /** Structure Content Editor Message Notes */
     StructureContentEditorMessageNotes: "31C63FB9-1365-4EEF-851D-8AB9A188A06C",
+    /** Check-in */
+    ThemePurposeCheckin: "2BBB1A44-708E-4469-80DE-4AAE6227BEF8",
+    /** Website Legacy */
+    ThemePurposeWebsiteLegacy: "4E1477FD-B105-4E4B-99BB-E5F1B964DC94",
+    /** Website Nextgen */
+    ThemePurposeWebsiteNextgen: "B177E07F-7E07-4D7B-AFA7-9DE163797659",
     /** Every two weeks */
     TransactionFrequencyBiweekly: "72990023-0D43-4554-8D32-28461CAB8920",
     /** A Frequency of First and Fifteenth */

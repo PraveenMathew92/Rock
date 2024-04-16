@@ -36,9 +36,12 @@ using Rock.Lava;
 using Rock.Lava.DotLiquid;
 using Rock.Lava.Fluid;
 using Rock.Lava.RockLiquid;
+using Rock.Logging;
 using Rock.Model;
+using Rock.Observability;
 using Rock.Utility.Settings;
 using Rock.Web.Cache;
+using Rock.Web.UI;
 using Rock.WebFarm;
 
 namespace Rock.WebStartup
@@ -129,14 +132,28 @@ namespace Rock.WebStartup
                 ShowDebugTimingMessage( "Initialize RockContext" );
             }
 
+            LogStartupMessage( "Initializing Timezone" );
+            RockDateTimeHelper.SynchronizeTimeZoneConfiguration( RockDateTime.OrgTimeZoneInfo.Id );
+            ShowDebugTimingMessage( $"Initialize Timezone ({RockDateTime.OrgTimeZoneInfo.Id})" );
+
             RockInstanceConfig.SetDatabaseIsAvailable( true );
+
+            // Initialize observability after the database.
+            LogStartupMessage( "Initializing Observability" );
+            ObservabilityHelper.ConfigureObservability( true );
+            ShowDebugTimingMessage( "Initialize Observability" );
+
+            // Initialize the logger after the database.
+            LogStartupMessage( "Initializing RockLogger" );
+            RockLogger.Initialize();
+            RockLogger.ReloadConfiguration();
+            ShowDebugTimingMessage( "RockLogger" );
 
             // Configure the values for RockDateTime.
             // To avoid the overhead of initializing the GlobalAttributesCache prior to LoadCacheObjects(), load these from the database instead.
             LogStartupMessage( "Configuring Date Settings" );
             RockDateTime.FirstDayOfWeek = new AttributeService( new RockContext() ).GetSystemSettingValue( Rock.SystemKey.SystemSetting.START_DAY_OF_WEEK ).ConvertToEnumOrNull<DayOfWeek>() ?? RockDateTime.DefaultFirstDayOfWeek;
             InitializeRockGraduationDate();
-
             ShowDebugTimingMessage( "Initialize RockDateTime" );
 
             if ( runMigrationFileInfo.Exists )
@@ -231,6 +248,12 @@ namespace Rock.WebStartup
             LogStartupMessage( "Starting the Rock Fast Queue" );
             Rock.Transactions.RockQueue.StartFastQueue();
             ShowDebugTimingMessage( "Rock Fast Queue" );
+
+            bool anyThemesUpdated = UpdateThemes();
+            if ( anyThemesUpdated )
+            {
+                LogStartupMessage( "Themes are updated" );
+            }
         }
 
         /// <summary>
@@ -518,7 +541,7 @@ namespace Rock.WebStartup
         /// Searches all assemblies for <see cref="IEntitySaveHook"/> subclasses
         /// that need to be registered in the default save hook provider.
         /// </summary>
-        private static void ConfigureEntitySaveHooks()
+        internal static void ConfigureEntitySaveHooks()
         {
             var hookProvider = Rock.Data.DbContext.SharedSaveHookProvider;
             var entityHookType = typeof( EntitySaveHook<> );
@@ -568,6 +591,37 @@ namespace Rock.WebStartup
             }
 
             return migrationsWereRun;
+        }
+
+
+        /// <summary>
+        /// Update the themes.
+        /// </summary>
+        /// <returns></returns>
+        private static bool UpdateThemes()
+        {
+            bool anyThemesUpdated = false;
+            var rockContext = new RockContext();
+            var themeService = new ThemeService( rockContext );
+            var themes = RockTheme.GetThemes();
+            if ( themes != null && themes.Any() )
+            {
+                var dbThemes = themeService.Queryable().ToList();
+                var websiteLegacyValueId = DefinedValueCache.GetId( Rock.SystemGuid.DefinedValue.THEME_PURPOSE_WEBSITE_LEGACY.AsGuid() );
+                foreach ( var theme in themes.Where( a => !dbThemes.Any( b => b.Name == a.Name ) ) )
+                {
+                    var dbTheme = new Theme();
+                    dbTheme.Name = theme.Name;
+                    dbTheme.IsSystem = theme.IsSystem;
+                    dbTheme.RootPath = theme.RelativePath;
+                    dbTheme.PurposeValueId = websiteLegacyValueId;
+                    themeService.Add( dbTheme );
+                    rockContext.SaveChanges();
+                    anyThemesUpdated = true;
+                }
+            }
+
+            return anyThemesUpdated;
         }
 
         /// <summary>
@@ -646,7 +700,7 @@ namespace Rock.WebStartup
                 return result;
             }
 
-            var configConnectionString = System.Configuration.ConfigurationManager.ConnectionStrings["RockContext"]?.ConnectionString;
+            var configConnectionString = RockInstanceConfig.Database.ConnectionString;
 
             try
             {
@@ -971,11 +1025,10 @@ namespace Rock.WebStartup
                         name = elementType.Name;
                     }
 
-                    engine.RegisterTag( name, ( shortcodeName ) =>
+                    engine.RegisterTag( name, ( tagName ) =>
                     {
-                        var shortcode = Activator.CreateInstance( elementType ) as ILavaTag;
-
-                        return shortcode;
+                        var tag = Activator.CreateInstance( elementType ) as ILavaTag;
+                        return tag;
                     } );
 
                     try

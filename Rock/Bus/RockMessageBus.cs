@@ -23,6 +23,8 @@ using System.Threading.Tasks;
 
 using MassTransit;
 
+using Microsoft.Extensions.Logging;
+
 using Rock.Bus.Consumer;
 using Rock.Bus.Faults;
 using Rock.Bus.Message;
@@ -71,6 +73,12 @@ namespace Rock.Bus
         /// The transport component
         /// </summary>
         private static TransportComponent _transportComponent = null;
+
+        /// <summary>
+        /// The logger for the message bus. This is not a good pattern but since
+        /// we are in a static class, it is the best we can do.
+        /// </summary>
+        private static readonly ILogger _logger = RockLogger.LoggerFactory.CreateLogger( "Rock.Bus.RockMessageBus" );
 
         /// <summary>
         /// Gets the stat log.
@@ -187,6 +195,16 @@ namespace Rock.Bus
         }
 
         /// <summary>
+        /// Starts the unit test in-memory bus.
+        /// </summary>
+        internal static async Task StartTestMemoryBusAsync()
+        {
+            _transportComponent = new InMemory( false );
+
+            await ConfigureAndStartBusAsync();
+        }
+
+        /// <summary>
         /// Determines whether the message was sent by this Rock instance.
         /// </summary>
         /// <typeparam name="TQueue">The type of the queue.</typeparam>
@@ -270,7 +288,7 @@ namespace Rock.Bus
         public static Task SendAsync<TQueue>( ICommandMessage<TQueue> message, Type messageType )
             where TQueue : ISendCommandQueue, new()
         {
-            RockLogger.Log.Debug( RockLogDomains.Core, "Send Message Async: {@message} Message Type: {1}", message, messageType );
+            _logger.LogDebug( "Send Message Async: {@message} Message Type: {1}", message, messageType );
 
             if ( !IsReady() )
             {

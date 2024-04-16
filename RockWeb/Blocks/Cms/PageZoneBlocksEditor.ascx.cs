@@ -35,6 +35,7 @@ using Rock.Web.Cache;
 using Rock.Data;
 using Rock.Web;
 using Rock.Blocks;
+using Rock.Security;
 
 /// <summary>
 ///
@@ -474,6 +475,32 @@ namespace RockWeb.Blocks.Cms
         private void AddAdminControls( BlockCache block, Panel pnlLayoutItem )
         {
             Panel pnlAdminButtons = new Panel { ID = "pnlBlockConfigButtons", CssClass = "pull-right control-actions" };
+            var blockCompiledType = block.BlockType.GetCompiledType();
+
+            // Add in any custom actions from next generation blocks.
+            if ( typeof( IHasCustomActions ).IsAssignableFrom( blockCompiledType ) )
+            {
+                var customActionsBlock = ( IHasCustomActions ) Activator.CreateInstance( blockCompiledType );
+                var canEdit = BlockCache.IsAuthorized( Authorization.EDIT, CurrentPerson );
+                var canAdministrate = BlockCache.IsAuthorized( Authorization.ADMINISTRATE, CurrentPerson );
+                var page = PageCache.Get( hfPageId.Value.AsInteger() );
+
+                var configActions = customActionsBlock.GetCustomActions( canEdit, canAdministrate );
+
+                foreach ( var action in configActions )
+                {
+                    var script = $@"Obsidian.onReady(() => {{
+    System.import('@Obsidian/Templates/rockPage.js').then(module => {{
+        module.showCustomBlockAction('{action.ComponentFileUrl}', '{page.Guid}', '{block.Guid}');
+    }});
+}});";
+
+                    pnlAdminButtons.Controls.Add( new Literal
+                    {
+                        Text = $"<a href=\"#\" onclick=\"event.preventDefault(); {script.EncodeXml( true )}\" title=\"{action.Tooltip.EncodeXml( true )}\" class=\"btn btn-sm btn-default btn-square\"><i class=\"{action.IconCssClass}\"></i></a>"
+                    } );
+                }
+            }
 
             // Block Properties
             Literal btnBlockProperties = new Literal();
@@ -714,14 +741,16 @@ namespace RockWeb.Blocks.Cms
             {
                 try
                 {
-                    BlockTypeService.RegisterBlockTypes( Request.MapPath( "~" ), Page );
+                    BlockTypeService.RegisterBlockTypes( Request.MapPath( "~" ) );
                 }
                 catch
                 {
                     // ignore
                 }
 
-                var blockTypes = BlockTypeService.BlockTypesToDisplay( siteType )
+                // If the IsDebuggingEnabled happens to be true, show all the obsidian blocks. This is done for testing purposes.
+                // This flag needs to be removed once all the blocks are migrated to obsidian.
+                var blockTypes = BlockTypeService.BlockTypesToDisplay( siteType, HttpContext.Current.IsDebuggingEnabled )
                     .Select( b => new { b.Id, b.Name, b.Category, b.Description,
                         IsObsidian = typeof( IRockObsidianBlockType ).IsAssignableFrom( b.EntityType?.GetEntityType() ) } )
                     .ToList();

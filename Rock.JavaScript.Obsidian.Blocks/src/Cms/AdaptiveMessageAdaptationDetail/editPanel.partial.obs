@@ -23,7 +23,7 @@
                 <NumberBox v-model="viewSaturationCount" label="View Saturation Count" help="The number of times a person should view the message before it's deemed to have been saturated." />
             </div>
             <div class="col-md-3">
-                <NumberBox v-model="viewSaturationInDays" label="View Saturation in Days" help="Specify the number of days to be taken into consideration for the saturation calculation of views. Views outside this range will not be considered.">
+                <NumberBox v-model="viewSaturationInDays" label="View Saturation Date Range" help="Specify the number of days to be taken into consideration for the saturation calculation of views. Views outside this range will not be considered.">
                     <template #inputGroupAppend>
                         <span class="input-group-addon">days</span>
                     </template>
@@ -43,7 +43,9 @@
             </div>
         </div>
 
-        <AttributeValuesContainer v-model="attributeValues" :attributes="attributes" isEditMode :numberOfColumns="1" />
+        <SectionHeader title="Message Content"
+                       description="The items below represent different forms of content that can the associated with the message." />
+        <AttributeValuesContainer v-model="attributeValues" :attributes="attributes" isEditMode :numberOfColumns="1" :showCategoryLabel="false" />
     </fieldset>
 </template>
 
@@ -54,11 +56,12 @@
     import TextBox from "@Obsidian/Controls/textBox.obs";
     import NumberBox from "@Obsidian/Controls/numberBox.obs";
     import DropDownList from "@Obsidian/Controls/dropDownList.obs";
+    import SectionHeader from "@Obsidian/Controls/sectionHeader.obs";
     import { watchPropertyChanges } from "@Obsidian/Utility/block";
     import { propertyRef, updateRefValue } from "@Obsidian/Utility/component";
     import { AdaptiveMessageAdaptationBag } from "@Obsidian/ViewModels/Blocks/Cms/AdaptiveMessageAdaptationDetail/adaptiveMessageAdaptationBag";
     import { AdaptiveMessageAdaptationDetailOptionsBag } from "@Obsidian/ViewModels/Blocks/Cms/AdaptiveMessageAdaptationDetail/adaptiveMessageAdaptationDetailOptionsBag";
-import { ListItemBag } from "@Obsidian/ViewModels/Utility/listItemBag";
+    import { ListItemBag } from "@Obsidian/ViewModels/Utility/listItemBag";
 
     const props = defineProps({
         modelValue: {
@@ -84,12 +87,12 @@ import { ListItemBag } from "@Obsidian/ViewModels/Utility/listItemBag";
     const description = propertyRef(props.modelValue.description ?? "", "Description");
     const isActive = propertyRef(props.modelValue.isActive ?? false, "IsActive");
     const name = propertyRef(props.modelValue.name ?? "", "Name");
-    const viewSaturationCount = propertyRef(props.modelValue.viewSaturationCount ?? null, "viewSaturationCount");
-    const viewSaturationInDays = propertyRef(props.modelValue.viewSaturationInDays ?? null, "viewSaturationInDays");
+    const viewSaturationCount = propertyRef(props.modelValue.viewSaturationCount ?? null, "ViewSaturationCount");
+    const viewSaturationInDays = propertyRef(props.modelValue.viewSaturationInDays ?? null, "ViewSaturationInDays");
     const segments = propertyRef(props.modelValue.segments ?? [], "Segments");
     // The properties that are being edited. This should only contain
     // objects returned by propertyRef().
-    const propRefs = [description, isActive, name, segments];
+    const propRefs = [description, isActive, name, segments, viewSaturationCount, viewSaturationInDays];
 
     // #endregion
 
@@ -116,6 +119,8 @@ import { ListItemBag } from "@Obsidian/ViewModels/Utility/listItemBag";
         updateRefValue(description, props.modelValue.description ?? "");
         updateRefValue(isActive, props.modelValue.isActive ?? false);
         updateRefValue(name, props.modelValue.name ?? "");
+        updateRefValue(viewSaturationCount, props.modelValue.viewSaturationCount ?? null);
+        updateRefValue(viewSaturationInDays, props.modelValue.viewSaturationInDays ?? null);
         updateRefValue(segments, props.modelValue.segments ?? []);
     });
 
@@ -126,6 +131,8 @@ import { ListItemBag } from "@Obsidian/ViewModels/Utility/listItemBag";
             ...props.modelValue,
             attributeValues: attributeValues.value,
             description: description.value,
+            viewSaturationInDays: viewSaturationInDays.value,
+            viewSaturationCount: viewSaturationCount.value,
             isActive: isActive.value,
             name: name.value,
             segments: segments.value

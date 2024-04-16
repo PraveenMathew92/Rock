@@ -162,7 +162,6 @@ namespace Rock.Blocks.Group.Scheduling
         private List<int> _actualScheduleIds;
 
         private List<DateTime> _occurrenceDates;
-        private List<string> _occurrenceDateStrings;
 
         private List<GroupLocationSchedule> _unfilteredGroupLocationSchedules;
         private List<GroupLocationSchedule> _filteredGroupLocationSchedules;
@@ -172,6 +171,8 @@ namespace Rock.Blocks.Group.Scheduling
 
         private IDictionary<string, string> _pageParameters;
         private PersonPreferenceCollection _personPreferences;
+
+        private static readonly object _addAttendanceOccurrenceLock = new object();
 
         #endregion
 
@@ -230,12 +231,14 @@ namespace Rock.Blocks.Group.Scheduling
             var block = new BlockService( rockContext ).Get( this.BlockId );
             block.LoadAttributes( rockContext );
 
-            var ( filters, disallowGroupSelection ) = GetFiltersFromURLOrPersonPreferences( rockContext );
+            var (filters, disallowGroupSelection) = GetFiltersFromURLOrPersonPreferences( rockContext );
+            var scheduleOccurrences = GetScheduleOccurrences( rockContext );
 
             box.AppliedFilters = new GroupSchedulerAppliedFiltersBag
             {
                 Filters = filters,
-                ScheduleOccurrences = GetScheduleOccurrences( rockContext ),
+                ScheduleOccurrences = scheduleOccurrences,
+                UnassignedResourceCounts = GetUnassignedResourceCounts( rockContext, scheduleOccurrences ),
                 NavigationUrls = GetNavigationUrls( filters )
             };
             box.DisallowGroupSelection = disallowGroupSelection;
@@ -247,7 +250,7 @@ namespace Rock.Blocks.Group.Scheduling
         /// </summary>
         /// <param name="rockContext">The rock context.</param>
         /// <returns>The filters and whether to disallow group selection.</returns>
-        private ( GroupSchedulerFiltersBag filters, bool disallowGroupSelection ) GetFiltersFromURLOrPersonPreferences( RockContext rockContext )
+        private (GroupSchedulerFiltersBag filters, bool disallowGroupSelection) GetFiltersFromURLOrPersonPreferences( RockContext rockContext )
         {
             var filters = new GroupSchedulerFiltersBag();
             var disallowGroupSelection = false;
@@ -386,7 +389,7 @@ namespace Rock.Blocks.Group.Scheduling
 
             RefineFilters( rockContext, filters );
 
-            return ( filters, disallowGroupSelection );
+            return (filters, disallowGroupSelection);
         }
 
         /// <summary>
@@ -854,7 +857,7 @@ namespace Rock.Blocks.Group.Scheduling
         /// <summary>
         /// Gets the list of [group, location, schedule, occurrence date] occurrences, based on the currently-applied filters.
         /// <para>
-        /// Private _actualLocationIds, _actualScheduleIds, _occurrenceDates and _occurrenceDateStrings are set as a result of calling this method.
+        /// Private _actualLocationIds, _actualScheduleIds and _occurrenceDates are set as a result of calling this method.
         /// </para>
         /// </summary>
         /// <param name="rockContext">The rock context.</param>
@@ -866,13 +869,10 @@ namespace Rock.Blocks.Group.Scheduling
                 _actualLocationIds = null;
                 _actualScheduleIds = null;
                 _occurrenceDates = null;
-                _occurrenceDateStrings = null;
                 return null;
             }
 
             _occurrenceDates = new List<DateTime>();
-
-            EnsureAttendanceOccurrencesExist( rockContext );
 
             var occurrences = _filteredGroupLocationSchedules
                 .SelectMany( gls => gls.StartDateTimes, ( gls, startDateTime ) =>
@@ -883,9 +883,9 @@ namespace Rock.Blocks.Group.Scheduling
                             && ao.LocationId == gls.Location.Id
                             && ao.ScheduleId == gls.Schedule.Id
                             && ao.OccurrenceDate == startDateTime.Date
-                        )?.Id ?? 0;
+                        )?.Id;
 
-                    if ( attendanceOccurrenceId > 0 && !_occurrenceDates.Contains( startDateTime.Date ) )
+                    if ( !_occurrenceDates.Contains( startDateTime.Date ) )
                     {
                         _occurrenceDates.Add( startDateTime.Date );
                     }
@@ -903,8 +903,6 @@ namespace Rock.Blocks.Group.Scheduling
                         ScheduleId = gls.Schedule.Id,
                         ScheduleName = gls.Schedule.ToString(),
                         ScheduleOrder = gls.Schedule.Order,
-                        OccurrenceDate = startDateTime.Date.ToISO8601DateString(),
-                        FriendlyOccurrenceDate = startDateTime.Date.ToString( "dddd, MMM d" ),
                         OccurrenceDateTime = startDateTime,
                         SundayDate = RockDateTime.GetSundayDate( startDateTime ).ToISO8601DateString(),
                         MinimumCapacity = gls.Config?.MinimumCapacity,
@@ -913,7 +911,6 @@ namespace Rock.Blocks.Group.Scheduling
                         IsSchedulingEnabled = startDateTime.Date >= RockDateTime.Today
                     };
                 } )
-                .Where( o => o.AttendanceOccurrenceId > 0 )
                 .OrderBy( o => o.OccurrenceDate )
                 .ThenBy( o => o.ScheduleOrder )
                 .ThenBy( o => o.OccurrenceDateTime )
@@ -924,55 +921,125 @@ namespace Rock.Blocks.Group.Scheduling
 
             _actualLocationIds = occurrences.Select( o => o.LocationId ).Distinct().ToList();
             _actualScheduleIds = occurrences.Select( o => o.ScheduleId ).Distinct().ToList();
-            _occurrenceDateStrings = occurrences.Select( o => o.OccurrenceDate ).Distinct().ToList();
 
             return occurrences;
         }
 
         /// <summary>
-        /// Ensures attendance occurrence records exists for all [group, location, schedule, occurrence date] occurrences, based on the currently-applied filters.
+        /// Gets the list of unassigned [group, schedule, occurrence date] resource counts, based on the current schedule occurrences.
         /// </summary>
         /// <param name="rockContext">The rock context.</param>
-        private void EnsureAttendanceOccurrencesExist( RockContext rockContext )
+        /// <param name="scheduleOccurrences">The current list of [group, location, schedule, occurrence date] occurrences.</param>
+        /// <returns>The list of unassigned [group, schedule, occurrence date] resource counts.</returns>
+        private List<GroupSchedulerUnassignedResourceCountBag> GetUnassignedResourceCounts( RockContext rockContext, List<GroupSchedulerOccurrenceBag> scheduleOccurrences )
         {
-            if ( _filteredGroupLocationSchedules?.Any() != true )
+            if ( scheduleOccurrences?.Any() != true )
             {
-                return;
+                return null;
             }
 
-            var newAttendanceOccurrences = new List<AttendanceOccurrence>();
-
-            foreach ( var gls in _filteredGroupLocationSchedules )
+            // Begin by collecting the distinct [group, schedule, occurrence date] combinations (ignoring location)
+            // among the provided schedule occurrences, creating an entry for each combo; this will be the list of
+            // candidates that we'll refine below.
+            var unassignedResourceCounts = new List<GroupSchedulerUnassignedResourceCountBag>();
+            foreach ( var occurrence in scheduleOccurrences )
             {
-                foreach ( var startDateTime in gls.StartDateTimes )
+                if ( unassignedResourceCounts.Any( o =>
+                    o.OccurrenceDate == occurrence.OccurrenceDate
+                    && o.ScheduleId == occurrence.ScheduleId
+                    && o.GroupId == occurrence.GroupId
+                ) )
                 {
-                    var occurrenceDate = startDateTime.Date;
-                    if ( gls.AttendanceOccurrences.Any( ao => ao.OccurrenceDate == occurrenceDate ) )
-                    {
-                        continue;
-                    }
-
-                    var attendanceOccurrence = new AttendanceOccurrence
-                    {
-                        GroupId = gls.Group.Id,
-                        LocationId = gls.Location.Id,
-                        ScheduleId = gls.Schedule.Id,
-                        OccurrenceDate = occurrenceDate
-                    };
-
-                    gls.AttendanceOccurrences.Add( attendanceOccurrence );
-                    newAttendanceOccurrences.Add( attendanceOccurrence );
+                    continue;
                 }
+
+                unassignedResourceCounts.Add( new GroupSchedulerUnassignedResourceCountBag
+                {
+                    OccurrenceDate = occurrence.OccurrenceDate,
+                    ScheduleId = occurrence.ScheduleId,
+                    GroupId = occurrence.GroupId
+                } );
             }
 
-            if ( !newAttendanceOccurrences.Any() )
+            // Refine the complete list to include only those entries that actually have unassigned resources.
+            RefineUnassignedResourceCounts( rockContext, unassignedResourceCounts );
+
+            return unassignedResourceCounts;
+        }
+
+        /// <summary>
+        /// Refines the provided list of unassigned [group, schedule, occurrence date] resource counts, removing any entries that
+        /// are in the past or don't currently have any unassigned resources (attendance records) and updating those that remain
+        /// with the current count and attendance occurrence identifier.
+        /// </summary>
+        /// <param name="rockContext">The rock context.</param>
+        /// <param name="unassignedResourceCounts">The unrefined list of unassigned [group, schedule, occurrence date] resource counts.</param>
+        private void RefineUnassignedResourceCounts( RockContext rockContext, List<GroupSchedulerUnassignedResourceCountBag> unassignedResourceCounts )
+        {
+            if ( unassignedResourceCounts?.Any() != true )
             {
                 return;
             }
 
-            var attendanceOccurrenceService = new AttendanceOccurrenceService( rockContext );
-            attendanceOccurrenceService.AddRange( newAttendanceOccurrences );
-            rockContext.SaveChanges();
+            var occurrenceDates = unassignedResourceCounts
+                .Select( o => o.OccurrenceDate.LocalDateTime )
+                .Where( dt => dt.Date >= RockDateTime.Today )
+                .Distinct()
+                .ToList();
+
+            var scheduleIds = unassignedResourceCounts
+                .Select( o => o.ScheduleId )
+                .Distinct()
+                .ToList();
+
+            var groupIds = unassignedResourceCounts
+                .Select( o => o.GroupId )
+                .Distinct()
+                .ToList();
+
+            // Get all attendance occurrences + their attendee counts, for the provided group, schedule, occurrence date combos.
+            var attendanceOccurrences = new AttendanceOccurrenceService( rockContext )
+                .Queryable()
+                .Where( ao =>
+                    occurrenceDates.Contains( ao.OccurrenceDate )
+                    && ao.ScheduleId.HasValue && scheduleIds.Contains( ao.ScheduleId.Value )
+                    && ao.GroupId.HasValue && groupIds.Contains( ao.GroupId.Value )
+                    && !ao.LocationId.HasValue
+                    && ao.Attendees.Any( a => a.RequestedToAttend == true || a.ScheduledToAttend == true )
+                )
+                .Select( ao => new
+                {
+                    ao.OccurrenceDate,
+                    ScheduleId = ao.ScheduleId.Value,
+                    GroupId = ao.GroupId.Value,
+                    AttendanceOccurrenceId = ao.Id,
+                    ResourceCount = ao.Attendees.Count( a => a.RequestedToAttend == true || a.ScheduledToAttend == true )
+                } )
+                .ToList();
+
+            // Loop over the "counts" entries and:
+            //  1. remove those that don't have a matching attendance occurrence.
+            //  2. update those that remain.
+            // We'll iterate backwards for ease-of-removal from the list.
+            for ( var i = unassignedResourceCounts.Count - 1; i >= 0; i-- )
+            {
+                var unassignedResourceCount = unassignedResourceCounts[i];
+
+                var occurrence = attendanceOccurrences.FirstOrDefault( o =>
+                    o.OccurrenceDate == unassignedResourceCount.OccurrenceDate
+                    && o.ScheduleId == unassignedResourceCount.ScheduleId
+                    && o.GroupId == unassignedResourceCount.GroupId
+                );
+
+                if ( occurrence == null )
+                {
+                    unassignedResourceCounts.RemoveAt( i );
+                    continue;
+                }
+
+                unassignedResourceCount.AttendanceOccurrenceId = occurrence.AttendanceOccurrenceId;
+                unassignedResourceCount.ResourceCount = occurrence.ResourceCount;
+            }
         }
 
         /// <summary>
@@ -998,9 +1065,9 @@ namespace Rock.Blocks.Group.Scheduling
                 queryParams.Add( PageParameterKey.ScheduleIds, _actualScheduleIds.AsDelimited( "," ) );
             }
 
-            if ( _occurrenceDateStrings?.Count == 1 )
+            if ( _occurrenceDates?.Count == 1 )
             {
-                queryParams.Add( PageParameterKey.OccurrenceDate, _occurrenceDateStrings.First() );
+                queryParams.Add( PageParameterKey.OccurrenceDate, _occurrenceDates.First().ToISO8601DateString() );
             }
 
             var urls = new Dictionary<string, string>
@@ -1036,7 +1103,7 @@ namespace Rock.Blocks.Group.Scheduling
         /// <returns>An object containing the validated or fallback filters.</returns>
         private GroupSchedulerFiltersBag ValidateClientFilters( RockContext rockContext, GroupSchedulerFiltersBag filters )
         {
-            var ( fallbackFilters, disallowGroupSelection ) = GetFiltersFromURLOrPersonPreferences( rockContext );
+            var (fallbackFilters, disallowGroupSelection) = GetFiltersFromURLOrPersonPreferences( rockContext );
             if ( filters?.Groups?.Any() == true && disallowGroupSelection )
             {
                 filters.Groups = fallbackFilters.Groups;
@@ -1054,13 +1121,14 @@ namespace Rock.Blocks.Group.Scheduling
         private GroupSchedulerAppliedFiltersBag ApplyFilters( RockContext rockContext, GroupSchedulerFiltersBag filters )
         {
             RefineFilters( rockContext, filters );
-
             SaveFiltersToPersonPreferences( filters );
+            var scheduleOccurrences = GetScheduleOccurrences( rockContext );
 
             var appliedFilters = new GroupSchedulerAppliedFiltersBag
             {
                 Filters = filters,
-                ScheduleOccurrences = GetScheduleOccurrences( rockContext ),
+                ScheduleOccurrences = scheduleOccurrences,
+                UnassignedResourceCounts = GetUnassignedResourceCounts( rockContext, scheduleOccurrences ),
                 NavigationUrls = GetNavigationUrls( filters )
             };
 
@@ -1435,7 +1503,10 @@ namespace Rock.Blocks.Group.Scheduling
                 return response;
             }
 
-            var sourceOccurrences = GetScheduleOccurrences( rockContext );
+            var sourceOccurrences = GetScheduleOccurrences( rockContext )
+                ?.Where( o => o.AttendanceOccurrenceId.HasValue )
+                .ToList();
+
             if ( sourceOccurrences?.Any() != true )
             {
                 // There weren't any occurrences that match the source filters.
@@ -1443,8 +1514,7 @@ namespace Rock.Blocks.Group.Scheduling
             }
 
             // We have at least one source schedule occurrence to clone. Move on to step 2 in order to strip out any group, location,
-            // schedule combos that aren't relevant for the destination week + create any missing AttendanceOccurrence records for the
-            // occurrences that remain.
+            // schedule combos that aren't relevant for the destination week.
             filters.DateRange = new SlidingDateRangeBag
             {
                 RangeType = SlidingDateRangeType.DateRange,
@@ -1485,11 +1555,19 @@ namespace Rock.Blocks.Group.Scheduling
                     continue;
                 }
 
+                GetOrAddAttendanceOccurrence( rockContext, destination );
+                if ( !destination.AttendanceOccurrenceId.HasValue )
+                {
+                    // If the destination attendance occurrence still doesn't exist, prevent a null reference exception below.
+                    // Should never happen.
+                    continue;
+                }
+
                 anyOccurrencesToClone = true;
 
                 var result = attendanceService.CloneScheduledPeople(
-                    source.AttendanceOccurrenceId,
-                    destination.AttendanceOccurrenceId,
+                    source.AttendanceOccurrenceId.Value,
+                    destination.AttendanceOccurrenceId.Value,
                     this.RequestContext.CurrentPerson.PrimaryAlias
                 );
 
@@ -1531,6 +1609,56 @@ namespace Rock.Blocks.Group.Scheduling
         }
 
         /// <summary>
+        /// Ensures the attendance occurrence record exists for the specified group, location, schedule and occurrence date.
+        /// The provided object's <see cref="GroupSchedulerOccurrenceBag.AttendanceOccurrenceId"/> will be updated with the
+        /// new (or located) <see cref="AttendanceOccurrence"/> identifier.
+        /// </summary>
+        /// <param name="rockContext">The rock context.</param>
+        /// <param name="occurrence">The occurrence object containing the group, location, schedule and occurrence date in question.</param>
+        private void GetOrAddAttendanceOccurrence( RockContext rockContext, GroupSchedulerOccurrenceBag occurrence )
+        {
+            if ( occurrence == null || occurrence.AttendanceOccurrenceId.HasValue )
+            {
+                return;
+            }
+
+            var occurrenceDate = occurrence.OccurrenceDate.LocalDateTime.Date;
+            if ( occurrenceDate < RockDateTime.Today )
+            {
+                return;
+            }
+
+            var groupLocationSchedule = _filteredGroupLocationSchedules
+                ?.FirstOrDefault( gls =>
+                    gls.Group.Id == occurrence.GroupId
+                    && gls.Location.Id == occurrence.LocationId
+                    && gls.Schedule.Id == occurrence.ScheduleId
+                );
+
+            var existingOccurrence = groupLocationSchedule?.AttendanceOccurrences?.FirstOrDefault( ao => ao.OccurrenceDate == occurrenceDate );
+            if ( existingOccurrence != null )
+            {
+                occurrence.AttendanceOccurrenceId = existingOccurrence.Id;
+                return;
+            }
+
+            AttendanceOccurrence attendanceOccurrence;
+            lock ( _addAttendanceOccurrenceLock )
+            {
+                // Ensure only one person/process can do this at a time, so we don't violate the
+                // IX_GroupId_LocationID_ScheduleID_Date unique index on the [AttendanceOccurrence] table.
+                attendanceOccurrence = new AttendanceOccurrenceService( rockContext )
+                    .GetOrAdd( occurrenceDate, occurrence.GroupId, occurrence.LocationId, occurrence.ScheduleId );
+            }
+
+            if ( attendanceOccurrence != null )
+            {
+                occurrence.AttendanceOccurrenceId = attendanceOccurrence.Id;
+                groupLocationSchedule?.AttendanceOccurrences?.Add( attendanceOccurrence );
+            }
+        }
+
+        /// <summary>
         /// Validates the provided filters and auto-schedules occurrences specified within the filters.
         /// </summary>
         /// <param name="rockContext">The rock context.</param>
@@ -1538,14 +1666,58 @@ namespace Rock.Blocks.Group.Scheduling
         /// <returns>An object containing the validated filters, new list of filtered [group, location, schedule, occurrence date] occurrences and updated navigation URLs.</returns>
         private GroupSchedulerAppliedFiltersBag AutoSchedule( RockContext rockContext, GroupSchedulerFiltersBag filters )
         {
-            RefineFilters( rockContext, filters );
+            // This process will potentially create many attendance occurrence records in bulk; ensure only one person can do this at a time,
+            // so we don't violate the IX_GroupId_LocationID_ScheduleID_Date unique index on the [AttendanceOccurrence] table.
+            lock ( _addAttendanceOccurrenceLock )
+            {
+                RefineFilters( rockContext, filters );
 
-            var scheduleOccurrences = GetScheduleOccurrences( rockContext );
+                if ( _filteredGroupLocationSchedules?.Any() == true )
+                {
+                    var newAttendanceOccurrences = new List<AttendanceOccurrence>();
+
+                    foreach ( var gls in _filteredGroupLocationSchedules )
+                    {
+                        var futureStartDateTimes = gls.StartDateTimes.Where( dt => dt > RockDateTime.Now );
+                        foreach ( var startDateTime in futureStartDateTimes )
+                        {
+                            var occurrenceDate = startDateTime.Date;
+                            if ( gls.AttendanceOccurrences.Any( ao => ao.OccurrenceDate == occurrenceDate ) )
+                            {
+                                continue;
+                            }
+
+                            var attendanceOccurrence = new AttendanceOccurrence
+                            {
+                                GroupId = gls.Group.Id,
+                                LocationId = gls.Location.Id,
+                                ScheduleId = gls.Schedule.Id,
+                                OccurrenceDate = occurrenceDate
+                            };
+
+                            gls.AttendanceOccurrences.Add( attendanceOccurrence );
+                            newAttendanceOccurrences.Add( attendanceOccurrence );
+                        }
+                    }
+
+                    if ( newAttendanceOccurrences.Any() )
+                    {
+                        var attendanceOccurrenceService = new AttendanceOccurrenceService( rockContext );
+                        attendanceOccurrenceService.AddRange( newAttendanceOccurrences );
+                        rockContext.SaveChanges();
+                    }
+                }
+            }
+
+            var scheduleOccurrences = GetScheduleOccurrences( rockContext )
+                ?.Where( o => o.AttendanceOccurrenceId.HasValue )
+                .ToList();
+
             if ( scheduleOccurrences?.Any() == true )
             {
                 var attendanceOccurrenceIds = scheduleOccurrences
-                    .Where( s => s.OccurrenceDateTime > RockDateTime.Now )
-                    .Select( s => s.AttendanceOccurrenceId )
+                    .Where( o => o.OccurrenceDateTime.LocalDateTime > RockDateTime.Now )
+                    .Select( o => o.AttendanceOccurrenceId.Value )
                     .ToList();
 
                 var attendanceService = new AttendanceService( rockContext );
@@ -1558,6 +1730,7 @@ namespace Rock.Blocks.Group.Scheduling
             {
                 Filters = filters,
                 ScheduleOccurrences = scheduleOccurrences,
+                UnassignedResourceCounts = GetUnassignedResourceCounts( rockContext, scheduleOccurrences ),
                 NavigationUrls = GetNavigationUrls( filters )
             };
 
@@ -1565,7 +1738,7 @@ namespace Rock.Blocks.Group.Scheduling
         }
 
         /// <summary>
-        /// Validates the provided filters and sends confirmations to individuals scheduled for occurrences specified within the filters.
+        /// Validates the provided filters and sends confirmations to individuals scheduled for future occurrences specified within the filters.
         /// </summary>
         /// <param name="rockContext">The rock context.</param>
         /// <param name="filters">The filters containing the groups with individuals who should receive confirmations.</param>
@@ -1576,12 +1749,17 @@ namespace Rock.Blocks.Group.Scheduling
 
             RefineFilters( rockContext, filters );
 
-            var scheduleOccurrences = GetScheduleOccurrences( rockContext );
-            if ( scheduleOccurrences?.Any() == true )
+            var futureOccurrences = GetScheduleOccurrences( rockContext )
+                ?.Where( o =>
+                    o.AttendanceOccurrenceId.HasValue
+                    && o.OccurrenceDateTime.LocalDateTime > RockDateTime.Now
+                )
+                .ToList();
+
+            if ( futureOccurrences?.Any() == true )
             {
-                var attendanceOccurrenceIds = scheduleOccurrences
-                    .Where( s => s.OccurrenceDateTime > RockDateTime.Now )
-                    .Select( s => s.AttendanceOccurrenceId )
+                var attendanceOccurrenceIds = futureOccurrences
+                    .Select( s => s.AttendanceOccurrenceId.Value )
                     .ToList();
 
                 if ( attendanceOccurrenceIds.Any() )
@@ -1591,13 +1769,38 @@ namespace Rock.Blocks.Group.Scheduling
                         .Where( a => attendanceOccurrenceIds.Contains( a.OccurrenceId ) )
                         .Where( a => a.ScheduleConfirmationSent != true );
 
-                    var sendMessageResult = attendanceService.SendScheduleConfirmationCommunication( sendConfirmationAttendancesQuery );
-                    response.AnyCommunicationsToSend = sendConfirmationAttendancesQuery.Any();
+                    // Make sure we save changes after calling the following method, to mark successful sends in the database
+                    // and prevent duplicate sends the next time this method is called.
+                    var sendMessageResult = attendanceService.SendScheduleConfirmationCommunication( sendConfirmationAttendancesQuery, true );
                     rockContext.SaveChanges();
 
                     response.Errors = sendMessageResult.Errors;
                     response.Warnings = sendMessageResult.Warnings;
                     response.CommunicationsSentCount = sendMessageResult.MessagesSent;
+
+                    // Check to see if any group types are missing a system communication so we can alert the current person.
+                    var groupTypeNamesWithoutSystemCommunication = sendConfirmationAttendancesQuery
+                        .Where( a =>
+                            a.Occurrence.Group.GroupType != null
+                            && !a.Occurrence.Group.GroupType.ScheduleConfirmationSystemCommunicationId.HasValue
+                        )
+                        .Select( a => a.Occurrence.Group.GroupType.Name )
+                        .Distinct()
+                        .ToList();
+
+                    if ( groupTypeNamesWithoutSystemCommunication.Any() )
+                    {
+                        response.Warnings.InsertRange( 0, groupTypeNamesWithoutSystemCommunication.Select( name =>
+                            $@"Group Type ""{name}"" does not have a ""Schedule Confirmation Communication"" specified."
+                        ) );
+                    }
+
+                    if ( response.CommunicationsSentCount == 0
+                        && !response.Errors.Any()
+                        && !response.Warnings.Any() )
+                    {
+                        response.AnyCommunicationsToSend = sendConfirmationAttendancesQuery.Any();
+                    }
                 }
             }
 
@@ -1858,6 +2061,22 @@ namespace Rock.Blocks.Group.Scheduling
                 var resourceSettings = ApplyResourceSettings( rockContext, bag ?? new GroupSchedulerApplyResourceSettingsBag() );
 
                 return ActionOk( resourceSettings );
+            }
+        }
+
+        /// <summary>
+        /// Gets or adds the attendance occurrence for the specified group, location, schedule and occurrence date.
+        /// </summary>
+        /// <param name="bag">The occurrence object containing the group, location, schedule and occurrence date in question.</param>
+        /// <returns>The identifier of the added attendance occurrence record.</returns>
+        [BlockAction]
+        public BlockActionResult GetOrAddAttendanceOccurrence( GroupSchedulerOccurrenceBag bag )
+        {
+            using ( var rockContext = new RockContext() )
+            {
+                GetOrAddAttendanceOccurrence( rockContext, bag );
+
+                return ActionOk( bag.AttendanceOccurrenceId );
             }
         }
 

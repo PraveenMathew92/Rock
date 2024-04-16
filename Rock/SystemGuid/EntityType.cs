@@ -399,6 +399,11 @@ namespace Rock.SystemGuid
         public const string MOBILE_CONNECTION_CONNECTION_REQUEST_DETAIL_BLOCK_TYPE = "6C9B8E2A-A0B1-4E52-B419-250A77AFBCBF";
 
         /// <summary>
+        /// The GUID for the entity <see cref="Rock.Blocks.Types.Mobile.Connection.AddConnectionRequest"/>.
+        /// </summary>
+        public const string MOBILE_CONNECTION_ADD_CONNECTION_REQUEST = "F41E7BE3-2854-40FF-82C8-1FDEA12B8B2F";
+
+        /// <summary>
         /// The GUID for the entity <see cref="Rock.Blocks.Types.Mobile.Prayer.MyPrayerRequests"/>.
         /// </summary>
         public const string MOBILE_MY_PRAYER_REQUESTS_BLOCK_TYPE = "E644DE6A-44CA-48AC-BF33-5429DA8052C6";
@@ -432,6 +437,11 @@ namespace Rock.SystemGuid
         /// The GUID for the entity <see cref="Rock.Blocks.Types.Mobile.Core.Search"/>.
         /// </summary>
         public const string MOBILE_CORE_SEARCH_BLOCK_TYPE = "F81015CD-EBA9-4358-B930-4F1AB29AF879";
+
+        /// <summary>
+        /// The GUID for the entity <see cref="Rock.Blocks.Types.Mobile.Core.SmartSearch" />.
+        /// </summary>
+        public const string MOBILE_CORE_SMART_SEARCH_BLOCK_TYPE = "45BE4816-3F5B-4AD1-BA89-819325D7E8CF";
 
         /// <summary>
         /// The GUID for the entity Rock.Blocks.Types.Mobile.Events.CalendarEventList
@@ -699,6 +709,26 @@ namespace Rock.SystemGuid
         /// The guid for the Rock.Model.Schedule entity
         /// </summary>
         public const string SCHEDULE = "0B2C38A7-D79C-4F85-9757-F1B045D32C8A";
+
+        /// <summary>
+        /// The guid for the Rock.Search.Group.Name search component.
+        /// </summary>
+        public const string SEARCH_COMPONENT_GROUP_NAME = "94825231-DC38-4DC0-A1D3-64B4AD6A87F0";
+
+        /// <summary>
+        /// The guid for the Rock.Search.Person.Name search component.
+        /// </summary>
+        public const string SEARCH_COMPONENT_PERSON_NAME = "3B1D679A-290F-4A53-8E11-159BF0517A19";
+
+        /// <summary>
+        /// The guid for the Rock.Search.Person.Email search component.
+        /// </summary>
+        public const string SEARCH_COMPONENT_PERSON_EMAIL = "00095C10-72C9-4C82-844E-AE8B146DE4F1";
+
+        /// <summary>
+        /// The guid for the Rock.Search.Person.Phone search component.
+        /// </summary>
+        public const string SEARCH_COMPONENT_PERSON_PHONE = "5F92ECC3-4EBD-4C41-A691-C03F1DA4F7BF";
 
         /// <summary>
         /// The guid for the Rock.Workflow.Action.SendEmail entity
@@ -1759,6 +1789,11 @@ namespace Rock.SystemGuid
         /// The EntityType Guid for <see cref="Rock.Model.TaggedItem"/> 
         /// </summary>
         public const string TAGGED_ITEM = "AB97403A-206E-4E0C-AC42-856A010FA6DD";
+
+        /// <summary>
+        /// The EntityType Guid for <see cref="Rock.Model.Theme"/> 
+        /// </summary>
+        public const string THEME = "D02B63B9-E945-45BC-9D41-2C3E72B85F46";
 
         /// <summary>
         /// The EntityType Guid for <see cref="Rock.Model.UserLogin"/> 

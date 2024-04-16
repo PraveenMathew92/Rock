@@ -30,6 +30,7 @@ using Rock.Security;
 using Rock.Security.Authentication;
 using Rock.Security.Authentication.Passwordless;
 using Rock.ViewModels.Blocks.Security.AccountEntry;
+using Rock.Web;
 using Rock.Web.Cache;
 using Rock.Web.UI;
 using Rock.Web.UI.Controls;
@@ -46,7 +47,8 @@ namespace Rock.Blocks.Security
     [IconCssClass( "fa fa-user-lock" )]
     [SupportedSiteTypes( Model.SiteType.Web )]
 
-    #region "Block Attributes"
+    #region Block Attributes
+
     [BooleanField(
         "Require Email For Username",
         Key = AttributeKey.RequireEmailForUsername,
@@ -290,6 +292,13 @@ namespace Rock.Blocks.Security
         Category = "Captions",
         Order = 29 )]
 
+    [BooleanField(
+        "Disable Captcha Support",
+        Key = AttributeKey.DisableCaptchaSupport,
+        Description = "If set to 'Yes' the CAPTCHA verification step will not be performed.",
+        DefaultBooleanValue = false,
+        Order = 30 )]
+
     #endregion
 
     [Rock.SystemGuid.EntityTypeGuid( "75704274-FDB8-4A0C-AE0E-510F1977BE0A" )]
@@ -330,6 +339,7 @@ namespace Rock.Blocks.Security
             public const string DisableUsernameAvailabilityCheck = "DisableUsernameAvailabilityCheck";
             public const string ConfirmAccountPasswordlessTemplate = "ConfirmAccountPasswordlessTemplate";
             public const string ConfirmCaptionPasswordless = "ConfirmCaptionPasswordless";
+            public const string DisableCaptchaSupport = "DisableCaptchaSupport";
         }
 
         private static class PageParameterKey
@@ -361,6 +371,13 @@ namespace Rock.Blocks.Security
         [BlockAction]
         public BlockActionResult ForgotUsername( AccountEntryForgotUsernameRequestBag bag )
         {
+            var disableCaptcha = GetAttributeValue( AttributeKey.DisableCaptchaSupport ).AsBoolean();
+
+            if ( !disableCaptcha && !RequestContext.IsCaptchaValid )
+            {
+                return ActionBadRequest( "Captcha was not valid." );
+            }
+
             using ( var rockContext = new RockContext() )
             {
                 var person = GetSelectedDuplicatePerson( bag.PersonId, bag.Email, bag.LastName, rockContext );
@@ -423,6 +440,13 @@ namespace Rock.Blocks.Security
         [BlockAction]
         public BlockActionResult Register( AccountEntryRegisterRequestBox box )
         {
+            var disableCaptcha = GetAttributeValue( AttributeKey.DisableCaptchaSupport ).AsBoolean();
+
+            if ( !disableCaptcha && !RequestContext.IsCaptchaValid )
+            {
+                return ActionBadRequest( "Captcha was not valid." );
+            }
+
             using ( var rockContext = new RockContext() )
             {
                 var config = GetInitializationBox( box.State );
@@ -615,28 +639,31 @@ namespace Rock.Blocks.Security
 
             var isSmsNumberAssigned = false;
 
-            foreach ( var item in box.PersonInfo.PhoneNumbers )
+            if ( box.PersonInfo?.PhoneNumbers != null )
             {
-                var cleanNumber = PhoneNumber.CleanNumber( item.PhoneNumber );
-
-                if ( cleanNumber.IsNullOrWhiteSpace() )
+                foreach ( var item in box.PersonInfo.PhoneNumbers )
                 {
-                    continue;
+                    var cleanNumber = PhoneNumber.CleanNumber( item.PhoneNumber );
+
+                    if ( cleanNumber.IsNullOrWhiteSpace() )
+                    {
+                        continue;
+                    }
+
+                    var phoneNumber = new PhoneNumber
+                    {
+                        NumberTypeValueId = DefinedValueCache.Get( item.Guid ).Id,
+                        Number = cleanNumber,
+                        IsUnlisted = item.IsUnlisted,
+                        IsMessagingEnabled = item.IsSmsEnabled && !isSmsNumberAssigned,
+                        CountryCode = PhoneNumber.CleanNumber( item.CountryCode )
+                    };
+
+                    // Only allow one number to have SMS enabled.
+                    isSmsNumberAssigned = isSmsNumberAssigned || phoneNumber.IsMessagingEnabled;
+
+                    person.PhoneNumbers.Add( phoneNumber );
                 }
-                
-                var phoneNumber = new PhoneNumber
-                {
-                    NumberTypeValueId = DefinedValueCache.Get( item.Guid ).Id,
-                    Number = cleanNumber,
-                    IsUnlisted = item.IsUnlisted,
-                    IsMessagingEnabled = item.IsSmsEnabled && !isSmsNumberAssigned,
-                    CountryCode = PhoneNumber.CleanNumber( item.CountryCode )
-                };
-
-                // Only allow one number to have SMS enabled.
-                isSmsNumberAssigned = isSmsNumberAssigned || phoneNumber.IsMessagingEnabled;
-
-                person.PhoneNumbers.Add( phoneNumber );
             }
 
             int? campusId = null;
@@ -649,7 +676,11 @@ namespace Rock.Blocks.Security
 
             // Save address
             var address = box.PersonInfo.Address;
-            if ( config.IsAddressShown && address != null )
+            if ( config.IsAddressShown
+                 && address != null
+                 && address.Street1.IsNotNullOrWhiteSpace()
+                 && address.City.IsNotNullOrWhiteSpace()
+                 && address.PostalCode.IsNotNullOrWhiteSpace() )
             {
                 var locationTypeGuid = GetAttributeValue( AttributeKey.LocationType ).AsGuid();
                 if ( locationTypeGuid != Guid.Empty )
@@ -678,6 +709,47 @@ namespace Rock.Blocks.Security
                     rockContext.SaveChanges();
                 }
             }
+
+            // Save any attribute values
+            person.LoadAttributes( rockContext );
+            var personAttributes = GetAttributeCategoryAttributes( rockContext );
+            person.SetPublicAttributeValues(
+                box.PersonInfo.AttributeValues,
+                person,
+                // Do not enforce security; otherwise, some attribute values may not be set for unauthenticated users.
+                enforceSecurity: false,
+                attributeFilter: a1 => personAttributes.Any( a => a.Guid == a1.Guid ) );
+
+            /*
+                2024/02/27 - JSC
+
+                To prevent the DbContext from trying to save AttributeValues with
+	            both an empty and a DefaultValue we need to update the persons AttributeValue
+	            so that any values which are set to the default get replaced with an empty string.
+	            When person.SaveAttributeValues is called the empty value will not be persisted.
+	            We don't want to modify the behavior of Attribute/Helper.SaveAttributeValues
+	            as there are times when we DO want to persist default values 
+	            (e.g. when a user explicitly edits a page with those values shown).
+	
+                 Reason: New registration creates AttributeValues with configured DefaultValues.
+            */
+            var attributesWithDefaults = person.Attributes
+                .Where( a => a.Value.DefaultValue.IsNotNullOrWhiteSpace() )
+                .Select( a => a.Value );
+
+            foreach ( var attributeWithDefault in attributesWithDefaults )
+            {
+                var personAttributeValue = person.GetAttributeValue( attributeWithDefault.Key );
+
+                // If the cacheValue is null or the default then set an empty value for it
+                // Otherwise the default value will be returned and persisted in Attribute.Helper.SaveAttributeValues.
+                if ( personAttributeValue == null || personAttributeValue.Equals( attributeWithDefault.DefaultValue, StringComparison.OrdinalIgnoreCase ) )
+                {
+                    person.SetAttributeValue( attributeWithDefault.Key, string.Empty );
+                }
+            }
+
+            person.SaveAttributeValues( rockContext );
 
             return person;
         }
@@ -715,6 +787,35 @@ namespace Rock.Blocks.Security
             var remoteAuthenticationSessionService = new RemoteAuthenticationSessionService( rockContext );
             remoteAuthenticationSessionService.CompleteRemoteAuthenticationSession( remoteAuthenticationSession, person.PrimaryAliasId.Value );
             rockContext.SaveChanges();
+        }
+
+        /// <summary>
+        /// Gets the attributes for the specified attribute categories.
+        /// </summary>
+        /// <param name="rockContext">The rock context.</param>
+        /// <returns>The attributes for the specified attribute categories.</returns>
+        private List<AttributeCache> GetAttributeCategoryAttributes( RockContext rockContext )
+        {
+            var attributeService = new AttributeService( rockContext );
+            var attributes = new List<AttributeCache>();
+
+            foreach ( var categoryGuid in this.GetAttributeValues( AttributeKey.AttributeCategories ).AsGuidList() )
+            {
+                var category = CategoryCache.Get( categoryGuid );
+
+                if ( category != null )
+                {
+                    foreach ( var attribute in attributeService.GetByCategoryId( category.Id, false ) )
+                    {
+                        if ( !attributes.Any( a => a.Guid == attribute.Guid ) )
+                        {
+                            attributes.Add( AttributeCache.Get( attribute ) );
+                        }
+                    }
+                }
+            }
+
+            return attributes;
         }
 
         /// <summary>
@@ -817,7 +918,9 @@ namespace Rock.Blocks.Security
             // Automatically set the phone number or email if this user is coming from the passwordless login flow.
             var passwordlessLoginStateString = encryptedStateOverride ?? Uri.UnescapeDataString( PageParameter( PageParameterKey.State ) );
             var passwordlessLoginState = PasswordlessAuthentication.GetDecryptedAuthenticationState( passwordlessLoginStateString );
+            var currentPerson = GetCurrentPerson();
 
+            var showPhoneNumbers = GetAttributeValue( AttributeKey.ShowPhoneNumbers ).AsBoolean();
             var requiredPhoneTypes = GetAttributeValue( AttributeKey.PhoneTypesRequired )
                 .Split( ',' )
                 .Where( guidString => guidString.IsNotNullOrWhiteSpace() )
@@ -835,6 +938,13 @@ namespace Rock.Blocks.Security
             {
                 knownNumbers.Add( SystemGuid.DefinedValue.PERSON_PHONE_TYPE_MOBILE.AsGuid(), passwordlessLoginState.PhoneNumber );
             }
+            else if ( currentPerson != null && showPhoneNumbers )
+            {
+                foreach ( var phoneNumber in currentPerson.PhoneNumbers )
+                {
+                    knownNumbers.Add( phoneNumber.NumberTypeValue.Guid, phoneNumber.Number );
+                }
+            }
 
             var phoneNumberTypeDefinedType = DefinedTypeCache.Get( SystemGuid.DefinedType.PERSON_PHONE_TYPE.AsGuid() );
 
@@ -843,8 +953,8 @@ namespace Rock.Blocks.Security
                 .Select( v => new AccountEntryPhoneNumberBag
                 {
                     Guid = v.Guid,
-                    IsHidden = knownNumbers.ContainsKey( v.Guid ) && knownNumbers[v.Guid].IsNotNullOrWhiteSpace(),
-                    IsRequired = requiredPhoneTypes.Contains( v.Guid ) || knownNumbers.ContainsKey( v.Guid ),
+                    IsHidden = passwordlessLoginState != null && knownNumbers.ContainsKey( v.Guid ) && knownNumbers[v.Guid].IsNotNullOrWhiteSpace(),
+                    IsRequired = requiredPhoneTypes.Contains( v.Guid ) || ( passwordlessLoginState != null && knownNumbers.ContainsKey( v.Guid ) ),
                     IsSmsEnabled = false,
                     IsUnlisted = false,
                     Label = v.Value,
@@ -859,7 +969,6 @@ namespace Rock.Blocks.Security
                 Step = AccountEntryStep.Registration
             };
 
-            var currentPerson = GetCurrentPerson();
             if ( PageParameter( PageParameterKey.Status ).ToLower() == "success" && currentPerson != null )
             {
                 accountEntryRegisterStepBox = new AccountEntryRegisterResponseBox()
@@ -875,6 +984,77 @@ namespace Rock.Blocks.Security
             }
 
             var areUsernameAndPasswordRequired = PageParameter( PageParameterKey.AreUsernameAndPasswordRequired ).AsBoolean();
+
+            // Use an empty Person if none is available.
+            // We should always include an AccountEntryPersonInfoBag.
+            // The Obsidian block expects any configured attributes
+            // (in addition to other config values like phones & addresses)
+            // to be set in the AccountEntryPersonInfoBag.
+            if ( currentPerson == null )
+            {
+                currentPerson = new Person();
+            }
+
+            if ( showPhoneNumbers )
+            {
+                foreach ( var bag in phoneNumberBags )
+                {
+                    var phoneNumber = currentPerson.PhoneNumbers.FirstOrDefault( x => x.Number == bag.PhoneNumber );
+
+                    if ( phoneNumber != null )
+                    {
+                        bag.PhoneNumber = phoneNumber.Number;
+                        bag.IsSmsEnabled = phoneNumber.IsMessagingEnabled;
+                        bag.IsUnlisted = phoneNumber.IsUnlisted;
+                    }
+                }
+            }
+
+            var accountEntryPersonInfoBag = new AccountEntryPersonInfoBag
+            {
+                FirstName = currentPerson.FirstName,
+                Gender = currentPerson.Gender,
+                Campus = currentPerson.PrimaryCampus?.Guid,
+                Email = currentPerson.Email,
+                LastName = currentPerson.LastName,
+                PhoneNumbers = phoneNumberBags
+            };
+
+            if ( currentPerson.BirthDate.HasValue )
+            {
+                accountEntryPersonInfoBag.Birthday = new ViewModels.Controls.BirthdayPickerBag()
+                {
+                    Day = currentPerson.BirthDate.Value.Day,
+                    Month = currentPerson.BirthDate.Value.Month,
+                    Year = currentPerson.BirthDate.Value.Year,
+                };
+            }
+
+            var homeAddress = currentPerson.GetHomeLocation();
+            if ( homeAddress != null )
+            {
+                accountEntryPersonInfoBag.Address = new ViewModels.Controls.AddressControlBag
+                {
+                    Street1 = homeAddress.Street1,
+                    Street2 = homeAddress.Street2,
+                    City = homeAddress.City,
+                    State = homeAddress.State,
+                    PostalCode = homeAddress.PostalCode,
+                    Country = homeAddress.Country
+                };
+            }
+
+            using ( var rockContext = new RockContext() )
+            {
+                var personAttributes = GetAttributeCategoryAttributes( rockContext );
+
+                // Load the attributes for the current person if possible.
+                currentPerson.LoadAttributes( rockContext );
+
+                accountEntryPersonInfoBag = accountEntryPersonInfoBag ?? new AccountEntryPersonInfoBag();
+                accountEntryPersonInfoBag.Attributes = currentPerson.GetPublicAttributesForEdit( currentPerson, attributeFilter: a1 => personAttributes.Any( a => a.Guid == a1.Guid ), enforceSecurity: false );
+                accountEntryPersonInfoBag.AttributeValues = currentPerson.GetPublicAttributeValuesForEdit( currentPerson, attributeFilter: a1 => personAttributes.Any( a => a.Guid == a1.Guid ), enforceSecurity: false );
+            }
 
             return new AccountEntryInitializationBox
             {
@@ -902,7 +1082,9 @@ namespace Rock.Blocks.Security
                 UsernameRegex = isEmailRequiredForUsername ? @"\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*" : Rock.Web.Cache.GlobalAttributesCache.Get().GetValue( "core.ValidUsernameRegularExpression" ),
                 UsernameRegexDescription = isEmailRequiredForUsername ? string.Empty : GlobalAttributesCache.Get().GetValue( "core.ValidUsernameCaption" ),
                 AccountEntryRegisterStepBox = accountEntryRegisterStepBox,
-                IsGenderPickerShown = GetAttributeValue( AttributeKey.ShowGender ).AsBoolean()
+                IsGenderPickerShown = GetAttributeValue( AttributeKey.ShowGender ).AsBoolean(),
+                AccountEntryPersonInfoBag = accountEntryPersonInfoBag,
+                DisableCaptchaSupport = GetAttributeValue( AttributeKey.DisableCaptchaSupport ).AsBoolean(),
             };
         }
 
@@ -959,7 +1141,7 @@ namespace Rock.Blocks.Security
             // Remove the http and https schemes before checking if URL contains XSS objects.
             if ( decodedUrl.Replace( "https://", string.Empty )
                 .Replace( "http://", string.Empty )
-                .HasXssObjects() )
+                .RedirectUrlContainsXss() )
             {
                 return null;
             }
@@ -1041,28 +1223,6 @@ namespace Rock.Blocks.Security
 
             state = PasswordlessAuthentication.GetDecryptedAuthenticationState( box?.State );
             return state != null;
-        }
-
-        /// <summary>
-        /// Determines if the full name is valid.
-        /// </summary>
-        /// <param name="box">The register request box.</param>
-        /// <returns><c>true</c> if valid; otherwise, <c>false</c>.</returns>
-        private static bool IsFullNameValid( AccountEntryRegisterRequestBox box )
-        {
-            /*
-                12/28/2022 - JMH
-             
-                See https://app.asana.com/0/1121505495628584/1200018171012738/f on why this is done
-
-                Reason: Passwordless Authentication
-             */
-            if ( box.FullName.IsNotNullOrWhiteSpace() )
-            {
-                return false;
-            }
-
-            return true;
         }
 
         /// <summary>
@@ -1148,12 +1308,6 @@ namespace Rock.Blocks.Security
             {
                 // The API consumer isn't sending the request properly.
                 errorMessage = "Request missing";
-                return false;
-            }
-
-            if ( !IsFullNameValid( box ) )
-            {
-                errorMessage = "Invalid Form Value";
                 return false;
             }
 
@@ -1292,6 +1446,8 @@ namespace Rock.Blocks.Security
             {
                 return ActionBadRequest( "Invalid Person" );
             }
+
+            UpdatePerson( person, box.PersonInfo, rockContext );
 
             var isFromPasswordlessAuthentication = IsFromPasswordlessAuthentication( box, out var passwordlessAuthenticationState );
             if ( !isFromPasswordlessAuthentication && CanPersonAuthenticateWithExistingUserLogin( person, rockContext ) )
@@ -1445,6 +1601,21 @@ namespace Rock.Blocks.Security
                     }
                 } );
             }
+        }
+
+        private void UpdatePerson( Person person, AccountEntryPersonInfoBag bag, RockContext rockContext )
+        {
+
+            // Save any attribute values
+            person.LoadAttributes( rockContext );
+            var personAttributes = GetAttributeCategoryAttributes( rockContext );
+            person.SetPublicAttributeValues(
+                bag.AttributeValues,
+                this.GetCurrentPerson(),
+                // Do not enforce security; otherwise, some attribute values may not be set for unauthenticated users.
+                enforceSecurity: false,
+                attributeFilter: a1 => personAttributes.Any( a => a.Guid == a1.Guid ) );
+            person.SaveAttributeValues( rockContext );
         }
 
         /// <summary>

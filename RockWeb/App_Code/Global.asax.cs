@@ -126,9 +126,6 @@ namespace RockWeb
             Rock.Bus.RockMessageBus.IsRockStarted = false;
             QueueInUse = false;
 
-            // Start-up the observability features
-            ObservabilityHelper.ConfigureObservability( true );
-
             /* 2020-05-20 MDP
                 * Prior to Application_Start, Rock.WebStartup has an AssemblyInitializer class that runs as a PreApplicationStartMethod.
                 *
@@ -499,10 +496,10 @@ namespace RockWeb
                 if ( context != null )
                 {
                     var ex = context.Server.GetLastError();
+                    HttpException httpEx = ex as HttpException;
 
                     try
                     {
-                        HttpException httpEx = ex as HttpException;
                         if ( httpEx != null )
                         {
                             int statusCode = httpEx.GetHttpCode();
@@ -527,7 +524,13 @@ namespace RockWeb
                     }
                     catch
                     {
-                        // ignore exception
+                        // Check again, but don't access the context.
+                        if ( httpEx != null && httpEx.Message.IsNotNullOrWhiteSpace() && httpEx.StackTrace.IsNotNullOrWhiteSpace() &&
+                        httpEx.Message.Contains( "The remote host closed the connection." ) &&
+                        httpEx.StackTrace.Contains( "Microsoft.AspNet.SignalR.Owin.ServerResponse.Write" ) )
+                        {
+                            return;
+                        }
                     }
 
                     while ( ex is HttpUnhandledException && ex.InnerException != null )
@@ -628,8 +631,6 @@ namespace RockWeb
                 // https://weblog.west-wind.com/posts/2013/oct/02/use-iis-application-initialization-for-keeping-aspnet-apps-alive
                 var client = new WebClient();
                 client.DownloadString( GetKeepAliveUrl() );
-
-                RockLogger.Log.Close();
             }
             catch
             {

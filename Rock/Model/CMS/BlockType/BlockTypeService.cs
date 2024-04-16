@@ -23,6 +23,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 
+using Rock.Attribute;
 using Rock.Blocks;
 using Rock.Data;
 using Rock.Web.Cache;
@@ -101,11 +102,32 @@ namespace Rock.Model
 
                 try
                 {
-                    /* 2020-09-04 MDP
-                     * Notice that we call BlockTypeCache.Get every time we need data from it.
-                     * We do this because the BlockTypeCache get easily get stale due to other threads.
-                     */
+                    /*
+                        02/09/2024 - JSC
 
+                        During Rock startup this method is called to pre-compile
+                        all the used block types so that the first page view
+                        is as fast as possible. The number of blocks has grown
+                        since this was first introduced in version 12 and we've
+                        looked for ways to improve performance; since the compilation
+                        of 540+ block types takes between 35 and 75 seconds when first
+                        starting up. We tried using multiple tasks to split the work,
+                        but that just pushed the delay to other startup jobs.
+                        The most promising result was creating a separate method used
+                        only during startup and removing the locking in that method
+                        while we iterated over the array directly. The gains we saw
+                        were between 5 and 10 percent and ultimately we decided to
+                        leave process as it is with the knowledge that as we migrate
+                        away from web forms this compilation time will decrease.                         
+
+                        Reason: Page Zone Editor loads slowly after Rock Restart
+                    */
+                    /* 
+                        09/04/2020 - MDP
+
+                        Notice that we call BlockTypeCache.Get every time we need data from it.
+                        We do this because the BlockTypeCache get easily get stale due to other threads.
+                    */
                     if ( BlockTypeCache.Get( blockTypeId )?.IsInstancePropertiesVerified == false )
                     {
                         // make sure that only one thread is trying to compile block types and attributes so that we don't get collisions and unneeded compiler overhead
@@ -230,9 +252,8 @@ namespace Rock.Model
         /// Registers any block types that are not currently registered in Rock.
         /// </summary>
         /// <param name="physWebAppPath">A <see cref="System.String" /> containing the physical path to Rock on the server.</param>
-        /// <param name="page">The <see cref="System.Web.UI.Page" />.</param>
         /// <param name="refreshAll">if set to <c>true</c> will refresh name, category, and description for all block types (not just the new ones)</param>
-        public static void RegisterBlockTypes( string physWebAppPath, System.Web.UI.Page page, bool refreshAll = false )
+        public static void RegisterBlockTypes( string physWebAppPath, bool refreshAll = false )
         {
             // Dictionary for block types.  Key is path, value is friendly name
             var list = new Dictionary<string, string>();
@@ -369,6 +390,23 @@ namespace Rock.Model
         /// <returns></returns>
         public static List<BlockTypeCache> BlockTypesToDisplay( SiteType siteType )
         {
+            // This method displays all the blocks, even the ones hidden in production, if the IsDevelopmentEnvironment flag is set to true.
+            // It was done to ensure that the develop environment displayed all the obsidian blocks for testing.
+            // This piece of logic needs to be removed once all the blocks have been migrated to obsidian.
+            return BlockTypesToDisplay( siteType, System.Web.Hosting.HostingEnvironment.IsDevelopmentEnvironment );
+        }
+
+        /// <summary>
+        /// Get the list of BlockTypes that may be added to the Page Zone for the given site type
+        /// </summary>
+        /// <param name="siteType">The site type of the blocks to be added.</param>
+        /// <param name="showAllWebsitesBlocks">An optional flag to determine if all the Website blocks needs to be displayed.
+        /// This flag was added to help test the obsidian blocks in dev machines. It needs to be removed once all the Website
+        /// blocks have been migrated to obsidian.</param>
+        /// <returns></returns>
+        [RockInternal( "1.17", true )]
+        public static List<BlockTypeCache> BlockTypesToDisplay( SiteType siteType, bool showAllWebsitesBlocks = false )
+        {
             return BlockTypeCache.All()
                 .Where( bt =>
                 {
@@ -382,11 +420,12 @@ namespace Rock.Model
 
                         if ( typeof( RockBlockType ).IsAssignableFrom( type ) )
                         {
-                            // if no site type is specified, then it likely is an obsidian block which is yet to be released.
-                            // So show it only if it is the develop environment.
+                            // Obsidian Blocks which are yet to be released, do not have a SupportedSiteTypes Attribute set.
+                            // We show these blocks only in the develop environment. This would help test the obsidian blocks during
+                            // the migration. This piece of logic needs to be removed once all blocks have been migrated to obsidian.
                             if ( type.GetCustomAttribute<SupportedSiteTypesAttribute>() == null )
                             {
-                                return System.Web.Hosting.HostingEnvironment.IsDevelopmentEnvironment;
+                                return showAllWebsitesBlocks;
                             }
                             return type.GetCustomAttribute<SupportedSiteTypesAttribute>()?.SiteTypes.Contains( siteType ) == true;
                         }
@@ -488,5 +527,32 @@ namespace Rock.Model
 
             return base.Delete( item );
         }
+
+        #region Obsolete Methods
+        /*
+            11/22/2023 - JR
+
+            The RegisterBlockTypes method is being deprecated in its current form to align with the evolving architecture of our application, 
+            specifically the transition from Web Forms to a more modern, modular framework. The dependency on System.Web.UI.Page is no longer 
+            relevant in this context.
+
+            Reason: Introducing an overloaded version of RegisterBlockTypes that omits the System.Web.UI.Page parameter. This new method
+            provides the same functionality but is designed to be more straightforward and not reliant on legacy technologies.
+        */
+
+        /// <summary>
+        /// Registers any block types that are not currently registered in Rock.
+        /// </summary>
+        /// <param name="physWebAppPath">A <see cref="System.String" /> containing the physical path to Rock on the server.</param>
+        /// <param name="page">The <see cref="System.Web.UI.Page" />.</param>
+        /// <param name="refreshAll">if set to <c>true</c> will refresh name, category, and description for all block types (not just the new ones)</param>
+        [RockObsolete("1.17.1")]
+        [Obsolete("This method is deprecated and will be removed in a future version. Please use the overload without the System.Web.UI.Page parameter.")]
+        public static void RegisterBlockTypes(string physWebAppPath, System.Web.UI.Page page, bool refreshAll = false)
+        {
+            RegisterBlockTypes(physWebAppPath, refreshAll);
+        }
+
+        #endregion
     }
 }
